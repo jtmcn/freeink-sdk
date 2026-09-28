@@ -634,6 +634,70 @@ static void testUc8279X4DeferredBase() {
   free(ref._grayBase);
 }
 
+static void testUc8279X4DeferredSettle() {
+  Uc8279X4Driver d, ref;
+  EpdBus bus, scratch;
+  d.begin(bus);
+  ref.begin(scratch);
+  Bytes bw, lsb, msb;
+  const auto page = [&](unsigned seed) {
+    bw = frame(seed);
+    lsb.assign(48000, 0);
+    msb.assign(48000, 0);
+    for (size_t i = seed; i < bw.size(); i += 53) {
+      msb[i] = 0x18;
+      lsb[i] = i % 2 ? 0x08 : 0;
+      bw[i] &= 0xE7;
+    }
+  };
+  const auto first = frame(1);
+  d.display(bus, first.data(), nullptr, RefreshMode::Full, false);
+  page(2);  // first AA page takes a real B/W activation, so nothing is deferred
+  d.beginGrayscale(bus, bw.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  assert(!d._settlePending);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  d.copyGrayscaleMsb(bus, msb.data());
+  d.displayGray(bus, bw.data(), false, nullptr, false);
+  d.cleanupGrayscaleBuffers(bus, bw.data());
+
+  // Transition: the settle DRF is left running and plane0 is only staged, touching no bus.
+  page(3);
+  d.beginGrayscale(bus, bw.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  assert(d._settlePending && bus.writes.back().command == 0x12);
+  bus.clear();
+  d.copyGrayscaleLsb(bus, lsb.data());
+  assert(d._plane0Staged && bus.writes.empty() && bus.waits == 0);
+
+  // MSB: wait out the settle, PTOUT, then plane0 and plane1 exactly as before.
+  Bytes plane0(48000);
+  for (size_t i = 0; i < plane0.size(); ++i) plane0[i] = uint8_t(bw[i] | lsb[i]);
+  scratch.clear();
+  ref.streamPlane(scratch, 0x10, plane0.data(), true);
+  ref.streamPlaneXor(scratch, 0x13, plane0.data(), msb.data(), true);
+  d.copyGrayscaleMsb(bus, msb.data());
+  assert(!d._settlePending && !d._plane0Staged && bus.waits >= 1);
+  assert(bus.writes.size() == 3 && bus.writes[0].command == 0x92);
+  assert(bus.writes[1].command == 0x10 && bus.writes[1].bytes == scratch.writes[0].bytes);
+  assert(bus.writes[2].command == 0x13 && bus.writes[2].bytes == scratch.writes[1].bytes);
+  d.displayGray(bus, bw.data(), false, nullptr, false);
+  d.cleanupGrayscaleBuffers(bus, bw.data());
+
+  // An abandoned pass settles before any other bus op.
+  page(4);
+  d.beginGrayscale(bus, bw.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  bus.clear();
+  d.cleanupGrayscaleBuffers(bus, bw.data());
+  assert(!d._settlePending && !d._plane0Staged && bus.waits >= 1 && bus.writes[0].command == 0x92);
+
+  // A powered-off base cannot defer: the POF needs the settle finished.
+  page(5);
+  d.beginGrayscale(bus, bw.data(), GrayscaleMode::Overlay, RefreshMode::Fast, true);
+  assert(!d._settlePending);
+  free(d._grayBase);
+  free(ref._grayBase);
+}
+
 int main(int argc, char**) {
   if (argc > 1) {
     testStickyAbsolute();
@@ -643,6 +707,7 @@ int main(int argc, char**) {
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testUc8279X4DeferredBase();
+  testUc8279X4DeferredSettle();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
