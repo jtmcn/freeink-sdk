@@ -127,8 +127,11 @@ class Uc8279X4Driver : public PanelDriver {
   // FUN_4214d3a0). DTM1 holds the previous page's B/W base, DTM2 the new one;
   // the UC8279_aa_prebw_mid settle waveform drives that transition without an OTP
   // GC flash. Ported from the UC8179 sibling; the DTM1 base restore is deferred (flushDeferredBase).
-  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
-  void runGrayscalePrecondition(EpdBus& bus);
+  // deferSettle leaves the settle DRF running so the host can compose AA planes meanwhile.
+  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff, bool deferSettle = false);
+  void runGrayscalePrecondition(EpdBus& bus, bool deferSettle = false);
+  // Finish a deferred settle DRF and upload a staged plane0; every bus op must call this first.
+  void settle(EpdBus& bus);
   // Write the deferred post-transition base (_grayBase) to DTM1 before anything reads it.
   void flushDeferredBase(EpdBus& bus);
 
@@ -169,6 +172,10 @@ class Uc8279X4Driver : public PanelDriver {
   bool _deferredBaseDtm1 = false;
   // Both RAM planes hold _grayBase (restored after an AA refresh) and nothing has streamed since.
   bool _planesHoldGrayBase = false;
+  // The precondition settle DRF is still running; its BUSY wait and PTOUT are owed.
+  bool _settlePending = false;
+  // _grayBase holds AA plane0, folded while the settle ran but not yet uploaded to DTM1.
+  bool _plane0Staged = false;
   // Async split state (see Uc8179Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;

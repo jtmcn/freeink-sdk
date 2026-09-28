@@ -297,6 +297,7 @@ void Uc8279X4Driver::begin(EpdBus& bus) {
   _needFullClear = true;
   _redriveAfterGray = false;
   _deferredBaseDtm1 = false;
+  settle(bus);
   _planesHoldGrayBase = false;
   bus.reset(50);
   initController(bus);
@@ -521,6 +522,7 @@ void Uc8279X4Driver::startBwRefresh(EpdBus& bus, bool fast) {
 }
 
 void Uc8279X4Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  settle(bus);
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
 
@@ -551,6 +553,7 @@ void Uc8279X4Driver::requestResync(uint8_t settlePasses) {
 void Uc8279X4Driver::skipInitialResync() { _needFullClear = false; }
 
 void Uc8279X4Driver::deepSleep(EpdBus& bus) {
+  settle(bus);
   _directGrayOnPanel = false;
   _deferredBaseDtm1 = false;
   _planesHoldGrayBase = false;
@@ -609,6 +612,7 @@ void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
   _deferredBaseDtm1 = false;  // plane0 below overwrites DTM1
   if (_absoluteInput) {
+    settle(bus);
     bus.waitBusy(" absolute plane");
     streamPlane(bus, CMD_DTM1, lsb, true);
     return;
@@ -617,9 +621,15 @@ void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (_grayBaseValid && _grayBase != nullptr) {
     // plane0 = base | maskLsb  (base bit = 1 for white, 0 for non-white).
     for (uint32_t i = 0; i < _bufferSize; i++) _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
-    streamPlane(bus, CMD_DTM1, _grayBase, /*invert=*/true);
+    // While the settle DRF runs, stage plane0 so the host can compose the MSB mask meanwhile.
+    if (_settlePending) {
+      _plane0Staged = true;
+    } else {
+      streamPlane(bus, CMD_DTM1, _grayBase, /*invert=*/true);
+    }
     _absoluteGrayPlanes = true;
   } else {
+    settle(bus);
     streamPlane(bus, CMD_DTM1, lsb, /*invert=*/true);  // fallback: no base snapshot
   }
   _grayBaseValid = false;  // _grayBase now holds absolute plane0, not the B/W base
@@ -637,6 +647,7 @@ void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb) return;
   if (_absoluteInput) {
+    settle(bus);
     bus.waitBusy(" absolute plane");
     streamPlane(bus, CMD_DTM2, msb, true);
     return;
@@ -649,6 +660,7 @@ void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
     for (uint32_t i = 0; i < _bufferSize; i++) grayPx += __builtin_popcount(msb[i]);
     _grayImagePass = grayPx * 100u > _bufferSize * 8u * FREEINK_UC8279X4_QUALITY_COVERAGE_PCT;
   }
+  settle(bus);  // uploads a staged plane0 to DTM1 before plane1 below
   if (_absoluteGrayPlanes && _grayBase != nullptr) {
     // plane1 = plane0 ^ maskMsb (streamed inverted). Then recover the B/W base
     // for the post-DRF restore: base = plane0 & plane1 = plane0 & (plane0 ^ msb).
@@ -746,10 +758,10 @@ void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
-  transitionGrayscaleBase(bus, fb, turnOff);
+  transitionGrayscaleBase(bus, fb, turnOff, /*deferSettle=*/true);
 }
 
-void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff, bool deferSettle) {
   if (!fb) return;
   flushDeferredBase(bus);  // the precondition below reads DTM1 as the previous page
   // Snapshot the new B/W base for the AA fold that follows.
@@ -763,7 +775,9 @@ void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, boo
   // DTM1 retains the previous page's clean B/W base; load the new base into DTM2.
   // The prebw settle waveform drives that transition without an OTP GC flash.
   streamPlane(bus, CMD_DTM2, fb);
-  runGrayscalePrecondition(bus);
+  // Only a snapshot-backed, powered-on transition can leave the settle running: the
+  // non-snapshot DTM1 restore and the POF below both need it finished.
+  runGrayscalePrecondition(bus, deferSettle && _grayBaseValid && !turnOff);
   // Restore the B/W baseline to DTM1. With a snapshot, defer it: the AA plane0 upload
   // usually overwrites DTM1 first, and every other DTM1 reader flushes it.
   if (_grayBaseValid) {
@@ -786,7 +800,7 @@ void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, boo
 // PSR(REG=1) -> PFS -> gate scan -> CDI 0xD7 -> CCSET -> TSSET(fast) -> upload
 // the 5 settle LUTs -> PON -> DRF -> PTOUT. Requires a valid previous page in
 // DTM1 and the new base in DTM2.
-void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
+void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus, bool deferSettle) {
   if (!_oldPlaneValid || !_grayRefreshedOnce) return;
   bus.waitBusy(" 8279x4_gray_pre_ready");
 
@@ -825,11 +839,28 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
 
   powerOnIfNeeded(bus, " 8279x4_gray_pre_PON");
   bus.cmd(CMD_DISPLAY_REFRESH);
+  if (deferSettle) {
+    _settlePending = true;
+    return;
+  }
   bus.waitBusy(" 8279x4_gray_pre_DRF");
   bus.cmd(CMD_PARTIAL_OUT);
 }
 
+void Uc8279X4Driver::settle(EpdBus& bus) {
+  if (_settlePending) {
+    _settlePending = false;
+    bus.waitBusy(" 8279x4_gray_pre_DRF");
+    bus.cmd(CMD_PARTIAL_OUT);
+  }
+  if (_plane0Staged) {
+    _plane0Staged = false;
+    if (_grayBase != nullptr) streamPlane(bus, CMD_DTM1, _grayBase, /*invert=*/true);
+  }
+}
+
 void Uc8279X4Driver::flushDeferredBase(EpdBus& bus) {
+  settle(bus);
   if (!_deferredBaseDtm1) return;
   _deferredBaseDtm1 = false;
   // _grayBase still holds the transition snapshot: only copyGrayscaleLsb folds it, and that clears the flag.
@@ -837,13 +868,14 @@ void Uc8279X4Driver::flushDeferredBase(EpdBus& bus) {
 }
 
 void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  settle(bus);
   _grayImagePass = false;
   _absoluteInput = false;
   _directGrayPass = false;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
   if (!bw) {
-    // Nothing is written here, so the deferred base stays owed to the next DTM1 reader.
+    // No B/W frame is written here, so the deferred base stays owed to the next DTM1 reader.
     _needFullClear = true;
     _oldPlaneValid = false;
     return;
