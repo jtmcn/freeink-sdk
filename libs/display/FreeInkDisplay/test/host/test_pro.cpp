@@ -620,6 +620,16 @@ static void testUc8279X4DeferredBase() {
   ram.dtm1AtRefresh.clear();
   aaTurn(10, false);
   assert(ram.dtm1AtRefresh.size() == 2 && ram.dtm1AtRefresh[0] == plane(skippedAgain));
+
+  // A null cleanup writes nothing, so it must leave the deferred base for the next DTM1 reader.
+  aaTurn(11, true);
+  const Bytes skippedBeforeNull = bw;
+  d.cleanupGrayscaleBuffers(bus, nullptr);
+  assert(d._deferredBaseDtm1);
+  ram.dtm1AtRefresh.clear();
+  d.displayGray(bus, bw.data(), false, nullptr, false);
+  ram.replay(bus);
+  assert(!ram.dtm1AtRefresh.empty() && ram.dtm1AtRefresh[0] == plane(skippedBeforeNull));
   free(d._grayBase);
   free(ref._grayBase);
 }

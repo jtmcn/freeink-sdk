@@ -836,12 +836,13 @@ void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _directGrayPass = false;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
-  _deferredBaseDtm1 = false;  // superseded: DTM1 is rewritten below or invalidated
   if (!bw) {
+    // Nothing is written here, so the deferred base stays owed to the next DTM1 reader.
     _needFullClear = true;
     _oldPlaneValid = false;
     return;
   }
+  _deferredBaseDtm1 = false;  // superseded: DTM1 is rewritten below
   // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored —
   // same rationale as the UC8179 sibling. Skip it when displayGray's restore
   // already left these exact bytes in DTM1.
