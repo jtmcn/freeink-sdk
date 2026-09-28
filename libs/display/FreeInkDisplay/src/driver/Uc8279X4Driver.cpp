@@ -443,6 +443,7 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
       // Full flash: seed the OLD plane white across the whole 600-gate scan for
       // the absolute GC-from-white waveform.
       bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
+      _planesHoldGrayBase = false;
     }
   } else if (_redriveAfterGray) {
     // Re-drive every pixel once after grayscale so the B/W transition scrubs
@@ -545,6 +546,8 @@ void Uc8279X4Driver::skipInitialResync() { _needFullClear = false; }
 
 void Uc8279X4Driver::deepSleep(EpdBus& bus) {
   _directGrayOnPanel = false;
+  _deferredBaseDtm1 = false;
+  _planesHoldGrayBase = false;
   _grayImagePass = false;
   _absoluteInput = false;
   _directGrayPass = false;
