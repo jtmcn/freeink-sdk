@@ -18,6 +18,11 @@
 #ifndef FREEINK_UC8279X4_XMIRROR
 #define FREEINK_UC8279X4_XMIRROR 0
 #endif
+// Opt-in write clock for this controller only (0 = board profile). The shared
+// Xteink 10 MHz spans SSD1677/UC8179/UC8279 batches; validate on hardware before raising.
+#ifndef FREEINK_UC8279X4_SPI_HZ
+#define FREEINK_UC8279X4_SPI_HZ 0
+#endif
 
 namespace freeink {
 namespace {
@@ -242,6 +247,7 @@ Uc8279X4Driver::Uc8279X4Driver(const Uc8279X4Config& cfg)
 
 uint32_t Uc8279X4Driver::spiHz() const {
   // UC8279 serial write timing is rated to 20 MHz, same as the rest of the family.
+  if (FREEINK_UC8279X4_SPI_HZ != 0) return FREEINK_UC8279X4_SPI_HZ;
   return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 16000000;
 }
 
