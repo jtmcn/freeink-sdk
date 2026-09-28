@@ -129,6 +129,8 @@ class Uc8279X4Driver : public PanelDriver {
   // GC flash. Ported from the UC8179 sibling; the base is restored to DTM1 after.
   void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
   void runGrayscalePrecondition(EpdBus& bus);
+  // Write the deferred post-transition base (_grayBase) to DTM1 before anything reads it.
+  void flushDeferredBase(EpdBus& bus);
 
   const Uc8279X4Config& _cfg;
 
@@ -162,6 +164,10 @@ class Uc8279X4Driver : public PanelDriver {
   // by the next B/W displayStart to RE-DRIVE every pixel to its target (DTM1 =
   // ~newframe), scrubbing the residue with a cheap DU (no GC flash).
   bool _redriveAfterGray = false;
+  // DTM1 still owes the post-transition B/W base; the AA plane0 upload normally supersedes it.
+  bool _deferredBaseDtm1 = false;
+  // Both RAM planes hold _grayBase (restored after an AA refresh) and nothing has streamed since.
+  bool _planesHoldGrayBase = false;
   // Async split state (see Uc8179Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;

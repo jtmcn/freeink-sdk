@@ -533,6 +533,97 @@ static void testStickyAbsolute() {
   display.releaseBuffers();
 }
 
+// Controller RAM at each DRF, replayed from the recorded writes.
+struct UcRam {
+  Bytes dtm1, dtm2;
+  std::vector<Bytes> dtm1AtRefresh;
+  unsigned dtm1Writes = 0;
+  void replay(EpdBus& bus) {
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x10 && !w.bytes.empty()) { dtm1 = w.bytes; ++dtm1Writes; }
+      if (w.command == 0x13 && !w.bytes.empty()) dtm2 = w.bytes;
+      if (w.command == 0x12) dtm1AtRefresh.push_back(dtm1);
+    }
+    bus.clear();
+  }
+};
+
+static void testUc8279X4DeferredBase() {
+  Uc8279X4Driver d, ref;
+  EpdBus bus, scratch;
+  d.begin(bus);
+  ref.begin(scratch);
+  const auto plane = [&](const Bytes& fb) {
+    scratch.clear();
+    ref.streamPlane(scratch, 0x10, fb.data());
+    return scratch.writes.back().bytes;
+  };
+  // Overlay masks: light=(0,1), dark=(1,1); the B/W base is 0 under every gray pixel.
+  Bytes bw, lsb, msb;
+  const auto page = [&](unsigned seed) {
+    bw = frame(seed);
+    lsb.assign(48000, 0);
+    msb.assign(48000, 0);
+    for (size_t i = seed; i < bw.size(); i += 53) {
+      msb[i] = 0x18;
+      lsb[i] = i % 2 ? 0x08 : 0;
+      bw[i] &= 0xE7;
+    }
+  };
+  UcRam ram;
+  const auto aaTurn = [&](unsigned seed, bool skipAa) {
+    page(seed);
+    d.beginGrayscale(bus, bw.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+    if (!skipAa) {
+      d.copyGrayscaleLsb(bus, lsb.data());
+      d.copyGrayscaleMsb(bus, msb.data());
+      d.displayGray(bus, bw.data(), false, nullptr, false);
+      d.cleanupGrayscaleBuffers(bus, bw.data());
+    }
+    ram.replay(bus);
+  };
+  const auto first = frame(1);
+  d.display(bus, first.data(), nullptr, RefreshMode::Full, false);
+  ram.replay(bus);
+  aaTurn(2, false);  // first AA page takes a real B/W activation
+  const Bytes previous = bw;
+
+  // Transition + AA: the precondition diffs against the previous base, then DTM1 only
+  // receives plane0 and displayGray's restore (no transition restore, no cleanup reseed).
+  ram.dtm1AtRefresh.clear();
+  ram.dtm1Writes = 0;
+  aaTurn(3, false);
+  assert(ram.dtm1AtRefresh.size() == 2 && ram.dtm1AtRefresh[0] == plane(previous));
+  assert(ram.dtm1Writes == 2 && ram.dtm1 == plane(bw));
+
+  // A cleanup with a different B/W frame must still reseed DTM1.
+  const auto other = frame(9);
+  d.cleanupGrayscaleBuffers(bus, other.data());
+  ram.replay(bus);
+  assert(ram.dtm1 == plane(other));
+
+  // AA skipped after a transition: the deferred base reaches DTM1 before the next diff reads it.
+  aaTurn(4, false);
+  aaTurn(5, true);
+  const Bytes skipped = bw;
+  assert(d._deferredBaseDtm1);
+  const auto next = frame(6);
+  ram.dtm1AtRefresh.clear();
+  d.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  ram.replay(bus);
+  assert(ram.dtm1AtRefresh.size() == 1 && ram.dtm1AtRefresh[0] == plane(skipped));
+
+  // Consecutive transitions: the second precondition diffs against the skipped page's base.
+  aaTurn(7, false);
+  aaTurn(8, true);
+  const Bytes skippedAgain = bw;
+  ram.dtm1AtRefresh.clear();
+  aaTurn(10, false);
+  assert(ram.dtm1AtRefresh.size() == 2 && ram.dtm1AtRefresh[0] == plane(skippedAgain));
+  free(d._grayBase);
+  free(ref._grayBase);
+}
+
 int main(int argc, char**) {
   if (argc > 1) {
     testStickyAbsolute();
@@ -541,6 +632,7 @@ int main(int argc, char**) {
   }
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
+  testUc8279X4DeferredBase();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
