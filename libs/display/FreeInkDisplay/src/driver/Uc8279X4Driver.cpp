@@ -290,6 +290,8 @@ void Uc8279X4Driver::begin(EpdBus& bus) {
   _oldPlaneValid = false;
   _needFullClear = true;
   _redriveAfterGray = false;
+  _deferredBaseDtm1 = false;
+  _planesHoldGrayBase = false;
   bus.reset(50);
   initController(bus);
   // Framebuffer-sized scratch for the grayscale absolute-plane fold (SPIRAM;
@@ -318,6 +320,7 @@ void Uc8279X4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
 }
 
 void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
+  _planesHoldGrayBase = false;
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
@@ -355,6 +358,7 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
 
 // Same geometry/mirroring as streamPlane, but each visible byte is lhs ^ rhs.
 void Uc8279X4Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs, bool invert) {
+  _planesHoldGrayBase = false;
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
@@ -391,6 +395,7 @@ void Uc8279X4Driver::powerOnIfNeeded(EpdBus& bus, const char* tag) {
 }
 
 bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  flushDeferredBase(bus);  // before the snapshot below overwrites _grayBase
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
   _grayImagePass = false;
@@ -438,6 +443,7 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
       // Full flash: seed the OLD plane white across the whole 600-gate scan for
       // the absolute GC-from-white waveform.
       bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
+      _planesHoldGrayBase = false;
     }
   } else if (_redriveAfterGray) {
     // Re-drive every pixel once after grayscale so the B/W transition scrubs
@@ -540,6 +546,8 @@ void Uc8279X4Driver::skipInitialResync() { _needFullClear = false; }
 
 void Uc8279X4Driver::deepSleep(EpdBus& bus) {
   _directGrayOnPanel = false;
+  _deferredBaseDtm1 = false;
+  _planesHoldGrayBase = false;
   _grayImagePass = false;
   _absoluteInput = false;
   _directGrayPass = false;
@@ -593,6 +601,7 @@ void Uc8279X4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMod
 
 void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+  _deferredBaseDtm1 = false;  // plane0 below overwrites DTM1
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
     streamPlane(bus, CMD_DTM1, lsb, true);
@@ -649,6 +658,7 @@ void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                  bool factoryMode) {
   (void)lut;
+  flushDeferredBase(bus);
 
   // Vendor AA sequence: PSR (REG=1) -> [planes already in RAM via
   // copyGrayscale*] -> 5x49 LUTs -> CDI (constant 0x97) -> PON -> PSR rewrite ->
@@ -701,6 +711,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   if (_grayBaseValid && _grayBase != nullptr) {
     streamPlane(bus, CMD_DTM1, _grayBase);
     streamPlane(bus, CMD_DTM2, _grayBase);
+    _planesHoldGrayBase = true;
     _oldPlaneValid = true;
     _needFullClear = false;
   }
@@ -734,6 +745,7 @@ void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
 
 void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
   if (!fb) return;
+  flushDeferredBase(bus);  // the precondition below reads DTM1 as the previous page
   // Snapshot the new B/W base for the AA fold that follows.
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
@@ -746,9 +758,13 @@ void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, boo
   // The prebw settle waveform drives that transition without an OTP GC flash.
   streamPlane(bus, CMD_DTM2, fb);
   runGrayscalePrecondition(bus);
-  // Restore the B/W baseline to DTM1 (an AA upload may overwrite these; the
-  // cached snapshot above survives for the fold in copyGrayscale*).
-  streamPlane(bus, CMD_DTM1, fb);
+  // Restore the B/W baseline to DTM1. With a snapshot, defer it: the AA plane0 upload
+  // usually overwrites DTM1 first, and every other DTM1 reader flushes it.
+  if (_grayBaseValid) {
+    _deferredBaseDtm1 = true;
+  } else {
+    streamPlane(bus, CMD_DTM1, fb);
+  }
   _oldPlaneValid = true;
   _redriveAfterGray = false;
   _needFullClear = false;
@@ -807,6 +823,13 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
   bus.cmd(CMD_PARTIAL_OUT);
 }
 
+void Uc8279X4Driver::flushDeferredBase(EpdBus& bus) {
+  if (!_deferredBaseDtm1) return;
+  _deferredBaseDtm1 = false;
+  // _grayBase still holds the transition snapshot: only copyGrayscaleLsb folds it, and that clears the flag.
+  if (_grayBase != nullptr) streamPlane(bus, CMD_DTM1, _grayBase);
+}
+
 void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _grayImagePass = false;
   _absoluteInput = false;
@@ -814,14 +837,18 @@ void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
   if (!bw) {
+    // Nothing is written here, so the deferred base stays owed to the next DTM1 reader.
     _needFullClear = true;
     _oldPlaneValid = false;
     return;
   }
+  _deferredBaseDtm1 = false;  // superseded: DTM1 is rewritten below
   // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored —
-  // same rationale as the UC8179 sibling. (displayGray already restored the base
-  // to both planes; this covers callers that reach cleanup by another route.)
-  streamPlane(bus, CMD_DTM1, bw);
+  // same rationale as the UC8179 sibling. Skip it when displayGray's restore
+  // already left these exact bytes in DTM1.
+  if (!(_planesHoldGrayBase && _grayBase != nullptr && memcmp(_grayBase, bw, _bufferSize) == 0)) {
+    streamPlane(bus, CMD_DTM1, bw);
+  }
   _oldPlaneValid = true;
   // RAM restoration does not cancel a requested physical clean.
 }
