@@ -45,7 +45,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // only, and the data clock at 40 MHz. The read timeouts we chased earlier were a
   // mount-sequencing problem, not a clock-margin one — see the retry loop below.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.max_freq_khz = SDMMC_FREQ_DEFAULT;  // 40 MHz
+  host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;  // 40 MHz; the mount loop drops to 20 MHz on failure
 
   // Slot pin map. The ESP32-S3 routes SDMMC through the GPIO matrix, so the data
   // and clock/command lines are assignable (unlike the classic ESP32's fixed slot).
@@ -107,6 +107,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
+    // Cards or sockets that can't hold 40 MHz get the last two attempts at 20 MHz.
+    if (attempt == 2) host.max_freq_khz = SDMMC_FREQ_DEFAULT;
     if (sdPwr >= 0) {
       digitalWrite(sdPwr, HIGH);
       delay(80);
@@ -132,6 +134,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     sdmmc_host_deinit();
     return false;
   }
+  if (Serial) Serial.printf("[%lu] [SD] SDMMC mounted at %d kHz\n", millis(), card->real_freq_khz);
   _card = card;
   return true;
 }
