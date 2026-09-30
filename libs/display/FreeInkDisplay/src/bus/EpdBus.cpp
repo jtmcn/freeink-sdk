@@ -314,6 +314,7 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   }
 
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+  _busyWaitMs += millis() - start;
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
   if (tag && Serial) {

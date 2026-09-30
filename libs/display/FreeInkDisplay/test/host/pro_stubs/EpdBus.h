@@ -36,5 +36,6 @@ class EpdBus {
   EpdPins pins() const { return {}; }
   void setBusyWaitHooks(void (*)(), void (*)()) {}
   void setBusyWaitSliceHook(bool (*)(int8_t,uint8_t)) {}
+  uint32_t busyWaitMs() const { return 0; }
 };
 }
