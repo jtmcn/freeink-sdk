@@ -111,6 +111,8 @@ class EpdBus {
   const EpdPins& pins() const { return _pins; }
   uint32_t spiHz() const { return _spiHz; }
   BusyPolarity busyPolarity() const { return _busy; }
+  // Running total of BUSY-wait time; wraps, so callers diff two readings.
+  uint32_t busyWaitMs() const { return _busyWaitMs; }
 
  private:
   // Busy-wait hooks (see setBusyWaitHooks / setBusyWaitSliceHook)
@@ -133,6 +135,7 @@ class EpdBus {
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
   uint32_t _spiHz = 40000000;
   int8_t _coCs = -1;
+  uint32_t _busyWaitMs = 0;
 };
 
 }  // namespace freeink

@@ -306,6 +306,10 @@ class FreeInkDisplay {
     _bus.setBusyWaitSliceHook(sliceHook);
   }
 
+  // Cumulative ms of polled BUSY waits (every UC-panel wait; not the ISR refresh
+  // wait other panels use). Diff two readings to time a refresh.
+  uint32_t busyWaitMs() const { return _bus.busyWaitMs(); }
+
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
   bool framebufferReady() const { return frameBuffer != nullptr; }
