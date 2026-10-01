@@ -25,13 +25,15 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
     for name in ("Arduino.h", "BoardConfig.h", "SPI.h", "esp_heap_caps.h"):
         shutil.copy2(HERE / "pro_stubs" / name, root / name)
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
-    for single in (False, True):
-        exe = root / ("single" if single else "dual")
+    for single, prebwDu in ((False, False), (True, False), (False, True)):
+        exe = root / (("single" if single else "dual") + ("_du" if prebwDu else ""))
         command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                    "-Wno-unused-parameter", "-Wno-unused-function", "-DBOARD_HAS_PSRAM=1",
                    "-DARDUINO=1", "-DFREEINK_DEVICE_METALIO_EINK4=1", "-I"+str(root), "-I"+str(root / "include")]
         if single:
             command += ["-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1"]
+        if prebwDu:
+            command += ["-DFREEINK_UC8279X4_PREBW_DU=1"]
         command += [str(HERE / "test_pro.cpp"), str(root / "src/FreeInkDisplay.cpp")]
         command += [str(root / f"src/driver/{name}Driver.cpp") for name in drivers]
         subprocess.run(command + ["-o", str(exe)], check=True)

@@ -772,6 +772,45 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x10) == 0x03);
 }
 
+#ifndef FREEINK_UC8279X4_PREBW_DU
+#define FREEINK_UC8279X4_PREBW_DU 0
+#endif
+
+// The AA base transition runs the stock settle LUTs, or the OTP DU waveform when opted in.
+static void testUc8279X4PrebwWaveform() {
+  Uc8279X4Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  const Bytes lsb(48000, 0), msb(48000, 0);
+  const auto first = frame(1);
+  d.display(bus, first.data(), nullptr, RefreshMode::Full, false);
+  // The first AA page takes a real B/W activation and arms the transition path.
+  const auto aaPage = frame(2);
+  d.beginGrayscale(bus, aaPage.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  d.copyGrayscaleMsb(bus, msb.data());
+  d.displayGray(bus, aaPage.data(), false, nullptr, false);
+  d.cleanupGrayscaleBuffers(bus, aaPage.data());
+  bus.clear();
+  const auto next = frame(3);
+  d.beginGrayscale(bus, next.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  int psr = -1;
+  unsigned settleLuts = 0;
+  bool refreshed = false;
+  for (const auto& w : bus.writes) {
+    if (w.command == 0x12) {
+      refreshed = true;
+      break;
+    }
+    if (w.command == 0x00 && !w.bytes.empty()) psr = w.bytes[0];
+    if (w.command >= 0x20 && w.command <= 0x24 && w.bytes.size() == 42) ++settleLuts;
+  }
+  assert(refreshed && psr >= 0);
+  assert(((psr & 0x20) != 0) == !FREEINK_UC8279X4_PREBW_DU);
+  assert(settleLuts == (FREEINK_UC8279X4_PREBW_DU ? 0u : 5u));
+  free(d._grayBase);
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -785,6 +824,7 @@ int main(int argc, char** argv) {
   }
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
+  testUc8279X4PrebwWaveform();
   testUc8279X4DeferredBase();
   testUc8279X4DeferredSettle();
   testDirectSleep<Uc8179Driver>();

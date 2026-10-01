@@ -795,6 +795,12 @@ void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, boo
   }
 }
 
+// 1 runs the AA base transition on the OTP DU waveform (~480 ms) instead of the
+// stock prebw-mid settle LUTs (~555 ms). Opt-in: validated on one X4 Pro only.
+#ifndef FREEINK_UC8279X4_PREBW_DU
+#define FREEINK_UC8279X4_PREBW_DU 0
+#endif
+
 // Stock's UC8279_aa_prebw_mid pre-conditioning pass (byte-exact order from
 // Factory.bin FUN_4214d3a0): PTIN -> PTL(full window, +120 gate offset) ->
 // PSR(REG=1) -> PFS -> gate scan -> CDI 0xD7 -> CCSET -> TSSET(fast) -> upload
@@ -820,7 +826,8 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus, bool deferSettle) {
   bus.data(0x01);
 
   bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);  // REG=1: run the external settle tables
+  // REG=1 runs the external settle tables; REG=0 runs the OTP DU waveform.
+  bus.data(FREEINK_UC8279X4_PREBW_DU ? static_cast<uint8_t>(_cfg.psr0 & 0xDF) : _cfg.psr0);
   bus.data(_cfg.psr1);
   bus.cmd(CMD_PFS);
   bus.data(_cfg.pfs);
@@ -832,9 +839,11 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus, bool deferSettle) {
   bus.data(_cfg.ccset);
   bus.cmd(CMD_TSSET);
   bus.data(_cfg.tssetFast);  // 0x5A
-  for (const auto& l : kXtfPreBwMid) {
-    bus.cmd(l[0]);
-    bus.data(&l[1], PREBW_LUT_LEN);
+  if (!FREEINK_UC8279X4_PREBW_DU) {
+    for (const auto& l : kXtfPreBwMid) {
+      bus.cmd(l[0]);
+      bus.data(&l[1], PREBW_LUT_LEN);
+    }
   }
 
   powerOnIfNeeded(bus, " 8279x4_gray_pre_PON");
