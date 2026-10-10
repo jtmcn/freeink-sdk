@@ -109,11 +109,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   for (int attempt = 0; attempt < 4; attempt++) {
     // Cards or sockets that can't hold 40 MHz get the last two attempts at 20 MHz.
     if (attempt == 2) host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-    if (sdPwr >= 0) {
+    if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
       delay(120);
+    } else if (sdPwr >= 0) {
+      digitalWrite(sdPwr, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);  // keep the rail on
     }
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {
