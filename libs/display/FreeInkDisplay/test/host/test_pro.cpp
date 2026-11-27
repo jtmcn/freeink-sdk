@@ -968,6 +968,37 @@ static void testUc8279X4PrebwWaveform() {
   free(d._grayBase);
 }
 
+// The first B/W paint after a one-pass AA page (reader menu, Home) re-drives with
+// DU under PREBW_DU instead of a white-seed GC flash.
+static void testUc8279X4OnePassThenBw() {
+  BoardConfig::ACTIVE.displayControllerVariant = 0x02;
+  Uc8279X4Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  const Bytes lsb(48000, 0), msb(48000, 0);
+  const auto first = frame(1);
+  d.display(bus, first.data(), nullptr, RefreshMode::Full, false);
+  d.setReaderRefresh(true);
+  const auto page = frame(2);
+  d.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  for (unsigned y = 0; y < 480; y += 80) {
+    d.writeGrayscalePlaneStrip(bus, GrayPlane::Lsb, lsb.data() + y * 100, y, 80);
+    d.writeGrayscalePlaneStrip(bus, GrayPlane::Msb, msb.data() + y * 100, y, 80);
+  }
+  d.displayGray(bus, page.data(), false, nullptr, false);
+  assert(d._textAa.onPanel());
+  d.setReaderRefresh(false);
+  bus.clear();
+  const auto menu = frame(3);
+  d.display(bus, menu.data(), nullptr, RefreshMode::Fast, false);
+  bool partial = false;
+  for (const auto& w : bus.writes) partial |= w.command == 0x91;
+  assert(partial == static_cast<bool>(FREEINK_UC8279X4_PREBW_DU));
+  assert(lastRegister(bus, 0x50) == (FREEINK_UC8279X4_PREBW_DU ? d._cfg.cdiBwFast : d._cfg.cdiBwFull));
+  assert(d._oldPlaneValid && !d._redriveAfterGray && !d._needFullClear);
+  free(d._grayBase);
+}
+
 static void testOnePage() {
   BoardConfig::ACTIVE.board = BoardConfig::Board::OnePage;
   auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
@@ -1391,6 +1422,7 @@ int main(int argc, char** argv) {
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testUc8279X4PrebwWaveform();
+  testUc8279X4OnePassThenBw();
   testUc8279X4DeferredBase();
   testUc8279X4DeferredSettle();
   testDirectSleep<Uc8179Driver>();

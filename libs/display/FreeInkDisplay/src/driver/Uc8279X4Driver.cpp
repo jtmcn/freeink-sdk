@@ -49,6 +49,12 @@ constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enabl
 constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
 constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature)
 
+// 1 runs post-AA B/W transitions on the OTP DU waveform instead of the stock
+// prebw-mid settle LUTs or a GC flash. Opt-in: validated on one X4 Pro only.
+#ifndef FREEINK_UC8279X4_PREBW_DU
+#define FREEINK_UC8279X4_PREBW_DU 0
+#endif
+
 constexpr uint8_t GRAY_LUT_LEN = 49;
 struct GrayLut {
   uint8_t cmd;
@@ -439,7 +445,9 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   // Half is CrossPoint's periodic ghost-cleanup (every getRefreshFrequency()
   // pages) AND the manual force-refresh; it MUST scrub, exactly like UC8179.
   const bool scrub = (mode == RefreshMode::Half);
-  const bool fast = (mode == RefreshMode::Fast) && !_needFullClear && _oldPlaneValid;
+  // After one-pass AA the planes hold AA data, but the re-drive below rewrites DTM1.
+  const bool oldPlaneUsable = _oldPlaneValid || (FREEINK_UC8279X4_PREBW_DU && _redriveAfterGray);
+  const bool fast = (mode == RefreshMode::Fast) && !_needFullClear && oldPlaneUsable;
 
   if (paintDestination) {
     streamPlane(bus, CMD_DTM1, fb, true);
@@ -963,12 +971,6 @@ void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, boo
     _isScreenOn = false;
   }
 }
-
-// 1 runs the AA base transition on the OTP DU waveform (~480 ms) instead of the
-// stock prebw-mid settle LUTs (~555 ms). Opt-in: validated on one X4 Pro only.
-#ifndef FREEINK_UC8279X4_PREBW_DU
-#define FREEINK_UC8279X4_PREBW_DU 0
-#endif
 
 // Stock's UC8279_aa_prebw_mid pre-conditioning pass (byte-exact order from
 // Factory.bin FUN_4214d3a0): PTIN -> PTL(full window, +120 gate offset) ->
